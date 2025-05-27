@@ -1,8 +1,5 @@
-import os
-from dotenv import load_dotenv
-from openai import OpenAI
-
-load_dotenv()
+from ollama import chat
+from ollama import ChatResponse
 
 # Install duckduckgo-search for this example:
 # !pip install -U duckduckgo-search
@@ -11,14 +8,23 @@ load_dotenv()
 
 # search_tool = DuckDuckGoSearchRun()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-# os.environ["OPENAI_ORGANIZATION"] = config("OPENAI_ORGANIZATION_ID")
-
-
-# This is the main function that you will use to run your application.
 if __name__ == "__main__":
     print("## This is a placeholder")
     print("-------------------------------")
-    result = input("Please enter your query: ")
+    input_query = input("Please enter your query: ")
 
-    print(result)
+    response: ChatResponse = chat(model='llama3.2', messages=[
+    {
+      'role': 'system',
+      'content': 'You are a helpful assistant. You answer questions clearly, consisely, and to the best of your ability'
+    },
+    {
+        'role': 'user',
+        'content': input_query,
+    },
+    ],
+    stream = True
+    )
+
+    for chunk in response:
+      print(chunk.message.content, end='', flush=True)
