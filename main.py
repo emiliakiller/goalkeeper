@@ -3,7 +3,6 @@ import requests
 
 from ollama import chat, ChatResponse
 from pydantic import BaseModel, Field
-from xmlrpc.client import DateTime
 
 # Install duckduckgo-search for this example:
 # !pip install -U duckduckgo-search
