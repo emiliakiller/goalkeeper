@@ -106,20 +106,3 @@ completion_2 = chat(
 final_response = KBResponse.model_validate_json(completion_2.message.content)
 print(final_response.source)
 print(final_response.answer)
-
-# --------------------------------------------------------------
-# Question that doesn't trigger the tool
-# --------------------------------------------------------------
-
-messages = [
-    {"role": "system", "content": system_prompt},
-    {"role": "user", "content": "What is the weather in Tokyo?"},
-]
-
-completion_3 = chat(
-    model="llama3.2",
-    messages=messages,
-    tools=tools,
-)
-
-print(completion_3.message.content)
