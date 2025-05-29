@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field
 from ollama import chat
@@ -12,186 +12,211 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-model = "llama3.2"
+model = "llama3.1"
 
 ISO8601_info = "The ISO 8601 date and time format is a standard way to represent dates and times. It follows a specific order: year-month-day-hour:minute:second."
 
+
 # --------------------------------------------------------------
-# Step 1: Define the data models for each stage
+# Step 1: Define the data models for routing and responses
 # --------------------------------------------------------------
 
 
-class EventExtraction(BaseModel):
-    """First LLM call: Extract basic event information"""
+class CalendarRequestType(BaseModel):
+    """Router LLM call: Determine the type of calendar request"""
 
-    description: str = Field(description="Raw description of the event")
-    is_calendar_event: bool = Field(
-        description="Whether this text describes a calendar event"
+    request_type: Literal["new_event", "modify_event", "other"] = Field(
+        description="Type of calendar request being made"
     )
     confidence_score: float = Field(description="Confidence score between 0 and 1")
+    details: str = Field(description="Cleaned details of the request")
 
 
-class EventDetails(BaseModel):
-    """Second LLM call: Parse specific event details"""
+class NewEventDetails(BaseModel):
+    """Details for creating a new event"""
 
     name: str = Field(description="Name of the event")
-    date: str = Field(
-        description=f"Date and time of the event. Use ISO 8601 to format this value. {ISO8601_info}"
-    )
-    duration_minutes: int = Field(description="Expected duration in minutes")
+    date: datetime = Field(description="Date and time of the event (ISO 8601)")
+    duration_minutes: int = Field(description="Duration in minutes")
     participants: list[str] = Field(description="List of participants")
 
 
-class EventConfirmation(BaseModel):
-    """Third LLM call: Generate confirmation message"""
+class Change(BaseModel):
+    """Details for changing an existing event"""
 
-    confirmation_message: str = Field(
-        description="Natural language confirmation message"
+    field: str = Field(description="Field to change")
+    new_value: str = Field(description="New value for the field")
+
+
+class ModifyEventDetails(BaseModel):
+    """Details for modifying an existing event"""
+
+    event_identifier: str = Field(
+        description="Description to identify the existing event"
     )
-    calendar_link: str|None = Field(
-        description="Generated calendar link only if applicable, otherwise None"
-    )
+    changes: list[Change] = Field(description="List of changes to make")
+    participants_to_add: Optional[list[str]] = Field(description="New participants to add")
+    participants_to_remove: Optional[list[str]] = Field(description="Participants to remove")
+
+
+class CalendarResponse(BaseModel):
+    """Final response format"""
+
+    success: bool = Field(description="Whether the operation was successful")
+    message: str = Field(description="User-friendly response message")
+    calendar_link: Optional[str] = Field(description="Calendar link if applicable")
 
 
 # --------------------------------------------------------------
-# Step 2: Define the functions
+# Step 2: Define the routing and processing functions
 # --------------------------------------------------------------
 
-
-def extract_event_info(user_input: str) -> EventExtraction:
-    """First LLM call to determine if input is a calendar event"""
-    logger.info("Starting event extraction analysis")
-    logger.debug(f"Input text: {user_input}")
-
-    today = datetime.now()
-    date_context = f"Today is {today.strftime('%A, %d %B, %Y')}."
+def route_calendar_request(user_input: str) -> CalendarRequestType:
+    """Router LLM call to determine the type of calendar request"""
+    logger.info("Routing calendar request")
+    logger.info(f"Input text: {user_input}")
 
     completion = chat(
         model=model,
         messages=[
             {
                 "role": "system",
-                "content": f"{date_context} Analyze if the text describes a calendar event.",
+                "content": "Determine if this is a request to create a new calendar event, modify an existing one, or if it's an irrelevant input",
             },
             {"role": "user", "content": user_input},
         ],
-        format=EventExtraction.model_json_schema(),
+        format=CalendarRequestType.model_json_schema(),
     )
-    result = EventExtraction.model_validate_json(completion.message.content)
-    result.description = user_input
+    result = CalendarRequestType.model_validate_json(completion.message.content)
+    result.details = user_input
     logger.info(
-        f"Extraction complete - Is calendar event: {result.is_calendar_event}, Confidence: {result.confidence_score:.2f}"
+        f"Request routed as: {result.request_type} with confidence: {result.confidence_score}. Details passed through: {result.details}"
     )
-    logger.info(f"Processed event details: {result.description}") ##
     return result
 
 
-def parse_event_details(description: str) -> EventDetails:
-    """Second LLM call to extract specific event details"""
-    logger.info("Starting event details parsing")
+# Parse details
+# f"{date_context} Extract detailed event information. When dates reference 'next Tuesday' or similar relative dates, use this current date as a reference. Assume all events to be in the future, and to start at mentioned times unless otherwise specified. Format dates and times using ISO8601: {ISO8601_info} Ensure you extract the correct date.",
+
+def handle_new_event(description: str, events: dict) -> CalendarResponse:
+    """Process a new event request"""
+    logger.info("Processing new event request")
 
     today = datetime.now()
     date_context = f"Today is {today.strftime('%A, %d %B, %Y')}."
 
+    # Get event details
     completion = chat(
         model=model,
         messages=[
             {
                 "role": "system",
-                "content": f"{date_context} Extract detailed event information. When dates reference 'next Tuesday' or similar relative dates, use this current date as reference. Assume all events to be in the future, and to start at mentioned times unless otherwise specified. Format dates and times using ISO8601: {ISO8601_info}",
+                "content": f"Extract details for creating a new calendar event. {date_context}",
             },
             {"role": "user", "content": description},
         ],
-        format=EventDetails.model_json_schema(),
+        format=NewEventDetails.model_json_schema(),
     )
-    result = EventDetails.model_validate_json(completion.message.content)
-    logger.info(
-        f"Parsed event details - Name: {result.name}, Date: {result.date}, Duration: {result.duration_minutes}min"
+    details = NewEventDetails.model_validate_json(completion.message.content)
+
+    logger.info(f"New event: {details.model_dump_json(indent=2)}")
+    events.update({"name": details.name, "date": details.date, "duration_minutes": details.duration_minutes, "participants": details.participants})
+
+    # Generate response
+    return CalendarResponse(
+        success=True,
+        message=f"Created new event '{details.name}' for {details.date} with {', '.join(details.participants)}",
+        calendar_link=f"calendar://new?event={details.name}",
     )
-    logger.info(f"Participants: {', '.join(result.participants)}") ##
-    return result
 
 
-def generate_confirmation(event_details: EventDetails) -> EventConfirmation:
-    """Third LLM call to generate a confirmation message"""
-    logger.info("Generating confirmation message")
+def handle_modify_event(description: str, events: dict) -> CalendarResponse:
+    """Process an event modification request"""
+    logger.info("Processing event modification request")
 
+
+    today = datetime.now()
+    date_context = f"Today is {today.strftime('%A, %d %B, %Y')}."
+
+    # Get modification details
     completion = chat(
         model=model,
         messages=[
             {
                 "role": "system",
-                "content": "Generate a natural confirmation message for the event. Sign off with your name: Susie",
+                "content": f"Extract details for modifying an existing calendar event. {date_context}",
             },
-            {"role": "user", "content": str(event_details.model_dump())},
+            {"role": "user", "content": description},
         ],
-        format=EventConfirmation.model_json_schema(),
+        format=ModifyEventDetails.model_json_schema(),
     )
-    result = EventConfirmation.model_validate_json(completion.message.content)
-    logger.info("Confirmation message generated successfully")
-    return result
+    details = ModifyEventDetails.model_validate_json(completion.message.content)
 
+    logger.info(f"Modified event: {details.model_dump_json(indent=2)}")
+    events.update({details.changes[0].field: details.changes[0].new_value})
+    # Generate response
+    return CalendarResponse(
+        success=True,
+        message=f"Modified event '{details.event_identifier}' with the requested changes",
+        calendar_link=f"calendar://modify?event={details.event_identifier}",
+    )
 
 # --------------------------------------------------------------
 # Step 3: Chain the functions together
 # --------------------------------------------------------------
 
-
-def process_calendar_request(user_input: str) -> Optional[EventConfirmation]:
-    """Main function implementing the prompt chain with gate check"""
+def process_calendar_request(user_input: str, events: dict) -> Optional[CalendarResponse]:
+    """Main function implementing the routing workflow"""
     logger.info("Processing calendar request")
-    logger.debug(f"Raw input: {user_input}")
 
-    # First LLM call: Extract basic info
-    initial_extraction = extract_event_info(user_input)
+    # Route the request
+    route_result = route_calendar_request(user_input)
 
-    # Gate check: Verify if it's a calendar event with sufficient confidence
-    if (
-        not initial_extraction.is_calendar_event
-        or initial_extraction.confidence_score < 0.7
-    ):
-        logger.warning(
-            f"Gate check failed - is_calendar_event: {initial_extraction.is_calendar_event}, confidence: {initial_extraction.confidence_score:.2f}"
-        )
+    # Check confidence threshold
+    if route_result.confidence_score < 0.7:
+        logger.warning(f"Low confidence score: {route_result.confidence_score}")
         return None
 
-    logger.info("Gate check passed, proceeding with event processing")
-
-    # Second LLM call: Get detailed event information
-    event_details = parse_event_details(initial_extraction.description)
-
-    # Third LLM call: Generate confirmation
-    confirmation = generate_confirmation(event_details)
-
-    logger.info("Calendar request processing completed successfully")
-    return confirmation
+    # Route to appropriate handler
+    if route_result.request_type == "new_event":
+        return handle_new_event(route_result.details, events)
+    elif route_result.request_type == "modify_event":
+        return handle_modify_event(route_result.details, events)
+    else:
+        logger.warning("Request type not supported")
+        return None
 
 
 # --------------------------------------------------------------
-# Step 4: Test the chain with a valid input
+# Step 3: Test with new event
 # --------------------------------------------------------------
 
-user_input = "Let's schedule a 1h team meeting next Tuesday at 2pm with Alice and Bob to discuss the project roadmap."
+events = {}
 
-result = process_calendar_request(user_input)
+new_event_input = "Let's schedule a team meeting next Tuesday at 2pm with Alice and Bob"
+result = process_calendar_request(new_event_input, events)
 if result:
-    print(f"Confirmation: {result.confirmation_message}")
-    if result.calendar_link:
-        print(f"Calendar Link: {result.calendar_link}")
-else:
-    print("This doesn't appear to be a calendar event request.")
-
+    print(f"Response: {result.message}")
+    print(events)
 
 # --------------------------------------------------------------
-# Step 5: Test the chain with an invalid input
+# Step 4: Test with modify event
 # --------------------------------------------------------------
 
-user_input = "Can you send an email to Alice and Bob to discuss the project roadmap?"
-
-result = process_calendar_request(user_input)
+modify_event_input = (
+    "Can you move the team meeting with Alice and Bob to Wednesday at 3pm instead?"
+)
+result = process_calendar_request(modify_event_input, events)
 if result:
-    print(f"Confirmation: {result.confirmation_message}")
-    if result.calendar_link:
-        print(f"Calendar Link: {result.calendar_link}")
-else:
-    print("This doesn't appear to be a calendar event request.")
+    print(f"Response: {result.message}")
+    print(events)
+
+# --------------------------------------------------------------
+# Step 5: Test with invalid request
+# --------------------------------------------------------------
+
+invalid_input = "What's the weather like today?"
+result = process_calendar_request(invalid_input, events)
+if not result:
+    print("Request not recognized as a calendar operation")
+print(events)
