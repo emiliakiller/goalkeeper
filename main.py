@@ -22,58 +22,55 @@ ISO8601_info = "The ISO 8601 date and time format is a standard way to represent
 # --------------------------------------------------------------
 
 
-class CalendarRequestType(BaseModel):
-    """Router LLM call: Determine the type of calendar request"""
+class GoalRequestType(BaseModel):
+    """Router LLM call: Determine the type of goal request"""
 
-    request_type: Literal["new_event", "modify_event", "other"] = Field(
-        description="Type of calendar request being made"
+    request_type: Literal["new_goal", "modify_goal", "retrieve_goal", "other"] = Field(
+        description="Type of goal request being made"
     )
     confidence_score: float = Field(description="Confidence score between 0 and 1")
-    details: str = Field(description="Cleaned details of the request")
+    goal_details: str = Field(description="Cleaned details of the request")
 
 
-class NewEventDetails(BaseModel):
-    """Details for creating a new event"""
+class NewGoalDetails(BaseModel):
+    """Details for creating a new goal"""
 
-    name: str = Field(description="Name of the event")
-    date: datetime = Field(description="Date and time of the event (ISO 8601)")
-    duration_minutes: int = Field(description="Duration in minutes")
-    participants: list[str] = Field(description="List of participants")
+    goal_name: str = Field(description="Brief description of the goal")
+    deadline: datetime = Field(description="Date and time that the goal is due (ISO 8601)")
+    priority: int = Field(description="Importance of the goal on a scale from 0 as least priority to 10 as highest priority")
+    # component_tasks: list[str] = Field(description="List of tasks that need to be done to achieve this goal")
 
 
 class Change(BaseModel):
-    """Details for changing an existing event"""
+    """Details for changing an existing goal"""
 
     field: str = Field(description="Field to change")
     new_value: str = Field(description="New value for the field")
 
 
-class ModifyEventDetails(BaseModel):
-    """Details for modifying an existing event"""
+class ModifyGoalDetails(BaseModel):
+    """Details for modifying an existing goal"""
 
-    event_identifier: str = Field(
-        description="Description to identify the existing event"
+    goal_identifier: str = Field(
+        description="Description to identify the existing goal"
     )
     changes: list[Change] = Field(description="List of changes to make")
-    participants_to_add: Optional[list[str]] = Field(description="New participants to add")
-    participants_to_remove: Optional[list[str]] = Field(description="Participants to remove")
 
 
-class CalendarResponse(BaseModel):
+class GoalResponse(BaseModel):
     """Final response format"""
 
     success: bool = Field(description="Whether the operation was successful")
     message: str = Field(description="User-friendly response message")
-    calendar_link: Optional[str] = Field(description="Calendar link if applicable")
 
 
 # --------------------------------------------------------------
 # Step 2: Define the routing and processing functions
 # --------------------------------------------------------------
 
-def route_calendar_request(user_input: str) -> CalendarRequestType:
-    """Router LLM call to determine the type of calendar request"""
-    logger.info("Routing calendar request")
+def route_goal_request(user_input: str) -> GoalRequestType:
+    """Router LLM call to determine the type of goal request"""
+    logger.info("Routing goal request")
     logger.info(f"Input text: {user_input}")
 
     completion = chat(
@@ -81,16 +78,16 @@ def route_calendar_request(user_input: str) -> CalendarRequestType:
         messages=[
             {
                 "role": "system",
-                "content": "Determine if this is a request to create a new calendar event, modify an existing one, or if it's an irrelevant input",
+                "content": "Determine if this is a request to create a new goal entry, modify an existing one, or if it's an irrelevant input",
             },
             {"role": "user", "content": user_input},
         ],
-        format=CalendarRequestType.model_json_schema(),
+        format=GoalRequestType.model_json_schema(),
     )
-    result = CalendarRequestType.model_validate_json(completion.message.content)
-    result.details = user_input
+    result = GoalRequestType.model_validate_json(completion.message.content)
+    # result.goal_details = user_input
     logger.info(
-        f"Request routed as: {result.request_type} with confidence: {result.confidence_score}. Details passed through: {result.details}"
+        f"Request routed as: {result.request_type} with confidence: {result.confidence_score}. Details passed through: {result.goal_details}"
     )
     return result
 
@@ -98,9 +95,9 @@ def route_calendar_request(user_input: str) -> CalendarRequestType:
 # Parse details
 # f"{date_context} Extract detailed event information. When dates reference 'next Tuesday' or similar relative dates, use this current date as a reference. Assume all events to be in the future, and to start at mentioned times unless otherwise specified. Format dates and times using ISO8601: {ISO8601_info} Ensure you extract the correct date.",
 
-def handle_new_event(description: str, events: dict) -> CalendarResponse:
-    """Process a new event request"""
-    logger.info("Processing new event request")
+def handle_new_goal(description: str, events: dict) -> GoalResponse:
+    """Process a new goal request"""
+    logger.info("Processing new goal request")
 
     today = datetime.now()
     date_context = f"Today is {today.strftime('%A, %d %B, %Y')}."
@@ -111,28 +108,27 @@ def handle_new_event(description: str, events: dict) -> CalendarResponse:
         messages=[
             {
                 "role": "system",
-                "content": f"Extract details for creating a new calendar event. {date_context}",
+                "content": f"Extract details for creating a new goal entry. {date_context}",
             },
             {"role": "user", "content": description},
         ],
-        format=NewEventDetails.model_json_schema(),
+        format=NewGoalDetails.model_json_schema(),
     )
-    details = NewEventDetails.model_validate_json(completion.message.content)
+    details = NewGoalDetails.model_validate_json(completion.message.content)
 
-    logger.info(f"New event: {details.model_dump_json(indent=2)}")
-    events.update({"name": details.name, "date": details.date, "duration_minutes": details.duration_minutes, "participants": details.participants})
+    logger.info(f"New goal: {details.model_dump_json(indent=2)}")
+    events.update({"goal_name": details.goal_name, "deadline": details.deadline, "priority": details.priority})
 
     # Generate response
-    return CalendarResponse(
+    return GoalResponse(
         success=True,
-        message=f"Created new event '{details.name}' for {details.date} with {', '.join(details.participants)}",
-        calendar_link=f"calendar://new?event={details.name}",
+        message=f"Created new goal '{details.goal_name}' for {details.deadline}",
     )
 
 
-def handle_modify_event(description: str, events: dict) -> CalendarResponse:
-    """Process an event modification request"""
-    logger.info("Processing event modification request")
+def handle_modify_goal(description: str, events: dict) -> GoalResponse:
+    """Process a goal modification request"""
+    logger.info("Processing goal modification request")
 
 
     today = datetime.now()
@@ -144,33 +140,34 @@ def handle_modify_event(description: str, events: dict) -> CalendarResponse:
         messages=[
             {
                 "role": "system",
-                "content": f"Extract details for modifying an existing calendar event. {date_context}",
+                "content": f"Extract details for modifying an existing goal entry. {date_context}",
             },
             {"role": "user", "content": description},
         ],
-        format=ModifyEventDetails.model_json_schema(),
+        format=ModifyGoalDetails.model_json_schema(),
     )
-    details = ModifyEventDetails.model_validate_json(completion.message.content)
+    details = ModifyGoalDetails.model_validate_json(completion.message.content)
 
-    logger.info(f"Modified event: {details.model_dump_json(indent=2)}")
-    events.update({details.changes[0].field: details.changes[0].new_value})
+    logger.info(f"Modified goal: {details.model_dump_json(indent=2)}")
+    for change in details.changes:
+        events.update({change.field: change.new_value})
+
     # Generate response
-    return CalendarResponse(
+    return GoalResponse(
         success=True,
-        message=f"Modified event '{details.event_identifier}' with the requested changes",
-        calendar_link=f"calendar://modify?event={details.event_identifier}",
+        message=f"Modified event '{details.goal_identifier}' with the requested changes",
     )
 
 # --------------------------------------------------------------
 # Step 3: Chain the functions together
 # --------------------------------------------------------------
 
-def process_calendar_request(user_input: str, events: dict) -> Optional[CalendarResponse]:
+def process_goal_request(user_input: str, events: dict) -> Optional[GoalResponse]:
     """Main function implementing the routing workflow"""
-    logger.info("Processing calendar request")
+    logger.info("Processing goal request")
 
     # Route the request
-    route_result = route_calendar_request(user_input)
+    route_result = route_goal_request(user_input)
 
     # Check confidence threshold
     if route_result.confidence_score < 0.7:
@@ -178,10 +175,10 @@ def process_calendar_request(user_input: str, events: dict) -> Optional[Calendar
         return None
 
     # Route to appropriate handler
-    if route_result.request_type == "new_event":
-        return handle_new_event(route_result.details, events)
-    elif route_result.request_type == "modify_event":
-        return handle_modify_event(route_result.details, events)
+    if route_result.request_type == "new_goal":
+        return handle_new_goal(route_result.goal_details, events)
+    elif route_result.request_type == "modify_goal":
+        return handle_modify_goal(route_result.goal_details, events)
     else:
         logger.warning("Request type not supported")
         return None
@@ -193,8 +190,8 @@ def process_calendar_request(user_input: str, events: dict) -> Optional[Calendar
 
 events = {}
 
-new_event_input = "Let's schedule a team meeting next Tuesday at 2pm with Alice and Bob"
-result = process_calendar_request(new_event_input, events)
+new_goal_input = "I want to write an essay on the care of dogs by next week Wednesday"
+result = process_goal_request(new_goal_input, events)
 if result:
     print(f"Response: {result.message}")
     print(events)
@@ -203,10 +200,9 @@ if result:
 # Step 4: Test with modify event
 # --------------------------------------------------------------
 
-modify_event_input = (
-    "Can you move the team meeting with Alice and Bob to Wednesday at 3pm instead?"
-)
-result = process_calendar_request(modify_event_input, events)
+modify_goal_input = "Can you move the dog care essay deadline to the following Friday instead?"
+
+result = process_goal_request(modify_goal_input, events)
 if result:
     print(f"Response: {result.message}")
     print(events)
@@ -216,7 +212,7 @@ if result:
 # --------------------------------------------------------------
 
 invalid_input = "What's the weather like today?"
-result = process_calendar_request(invalid_input, events)
+result = process_goal_request(invalid_input, events)
 if not result:
-    print("Request not recognized as a calendar operation")
+    print("Request not recognized as a goal operation")
 print(events)
