@@ -31,13 +31,14 @@ class GoalRequestType(BaseModel):
     confidence_score: float = Field(description="Confidence score between 0 and 1")
     goal_details: str = Field(description="Cleaned details of the request")
 
+priority = Literal["low", "medium", "high"]
 
 class NewGoalDetails(BaseModel):
     """Details for creating a new goal"""
 
-    goal_name: str = Field(description="Brief description of the goal")
-    deadline: datetime = Field(description="Date and time that the goal is due (ISO 8601)")
-    priority: int = Field(description="Importance of the goal on a scale from 0 as least priority to 10 as highest priority")
+    goal_name: str = Field(description="Brief description of the goal objective")
+    due_date: datetime = Field(description="Date and time that the goal is due (ISO 8601)")
+    goal_priority: priority = Field(description="Importance of the goal")
     # component_tasks: list[str] = Field(description="List of tasks that need to be done to achieve this goal")
 
 
@@ -78,14 +79,14 @@ def route_goal_request(user_input: str) -> GoalRequestType:
         messages=[
             {
                 "role": "system",
-                "content": "Determine if this is a request to create a new goal entry, modify an existing one, or if it's an irrelevant input",
+                "content": "Determine if this is a request to create a new goal entry, modify an existing one, retrieve an existing one, or if it's an irrelevant input",
             },
             {"role": "user", "content": user_input},
         ],
         format=GoalRequestType.model_json_schema(),
     )
     result = GoalRequestType.model_validate_json(completion.message.content)
-    # result.goal_details = user_input
+    result.goal_details = user_input
     logger.info(
         f"Request routed as: {result.request_type} with confidence: {result.confidence_score}. Details passed through: {result.goal_details}"
     )
@@ -93,7 +94,6 @@ def route_goal_request(user_input: str) -> GoalRequestType:
 
 
 # Parse details
-# f"{date_context} Extract detailed event information. When dates reference 'next Tuesday' or similar relative dates, use this current date as a reference. Assume all events to be in the future, and to start at mentioned times unless otherwise specified. Format dates and times using ISO8601: {ISO8601_info} Ensure you extract the correct date.",
 
 def handle_new_goal(description: str, events: dict) -> GoalResponse:
     """Process a new goal request"""
@@ -108,7 +108,7 @@ def handle_new_goal(description: str, events: dict) -> GoalResponse:
         messages=[
             {
                 "role": "system",
-                "content": f"Extract details for creating a new goal entry. {date_context}",
+                "content": f"Extract details for creating a new goal entry. {date_context} When dates reference 'next Tuesday' or similar relative dates, use this current date as a reference, and assume that all goals are due in the future. {ISO8601_info}",
             },
             {"role": "user", "content": description},
         ],
@@ -117,12 +117,12 @@ def handle_new_goal(description: str, events: dict) -> GoalResponse:
     details = NewGoalDetails.model_validate_json(completion.message.content)
 
     logger.info(f"New goal: {details.model_dump_json(indent=2)}")
-    events.update({"goal_name": details.goal_name, "deadline": details.deadline, "priority": details.priority})
+    events.update({"goal_name": details.goal_name, "due_date": details.due_date, "goal_priority": details.goal_priority})
 
     # Generate response
     return GoalResponse(
         success=True,
-        message=f"Created new goal '{details.goal_name}' for {details.deadline}",
+        message=f"Created new goal '{details.goal_name}' for {details.due_date}",
     )
 
 
@@ -140,7 +140,7 @@ def handle_modify_goal(description: str, events: dict) -> GoalResponse:
         messages=[
             {
                 "role": "system",
-                "content": f"Extract details for modifying an existing goal entry. {date_context}",
+                "content": f"Extract details for modifying an existing goal entry. Do not add unnecessary fields. {date_context} When dates reference 'next Tuesday' or similar relative dates, use this current date as a reference, and assume that all goals are due in the future. {ISO8601_info}",
             },
             {"role": "user", "content": description},
         ],
@@ -185,34 +185,40 @@ def process_goal_request(user_input: str, events: dict) -> Optional[GoalResponse
 
 
 # --------------------------------------------------------------
-# Step 3: Test with new event
+# Step 4: Test
 # --------------------------------------------------------------
 
 events = {}
+testing = True
 
-new_goal_input = "I want to write an essay on the care of dogs by next week Wednesday"
-result = process_goal_request(new_goal_input, events)
-if result:
-    print(f"Response: {result.message}")
+if testing:
+    test_inputs = [
+        "I want to write an essay on the care of dogs by next week Wednesday",
+        "Can you move the dog care essay deadline to the Friday after that instead?",
+        "Change the essay to be about general animal care, and to being critically important",
+        "What's the weather like today?"]
+    for item in test_inputs:
+        result = process_goal_request(item, events)
+
+        if result:
+            print(f"Response: {result.message}")
+        else:
+            print("Request not recognized as a goal operation")
+
+        print(events)
+
+
+# --------------------------------------------------------------
+# Step 5: Run the program
+# --------------------------------------------------------------
+
+while not testing:
+    user_input = input("What would you like to do?\n")
+    result = process_goal_request(user_input, events)
+
+    if result:
+        print(f"Response: {result.message}")
+    else:
+        print("Request not recognized as a goal operation")
+
     print(events)
-
-# --------------------------------------------------------------
-# Step 4: Test with modify event
-# --------------------------------------------------------------
-
-modify_goal_input = "Can you move the dog care essay deadline to the following Friday instead?"
-
-result = process_goal_request(modify_goal_input, events)
-if result:
-    print(f"Response: {result.message}")
-    print(events)
-
-# --------------------------------------------------------------
-# Step 5: Test with invalid request
-# --------------------------------------------------------------
-
-invalid_input = "What's the weather like today?"
-result = process_goal_request(invalid_input, events)
-if not result:
-    print("Request not recognized as a goal operation")
-print(events)
